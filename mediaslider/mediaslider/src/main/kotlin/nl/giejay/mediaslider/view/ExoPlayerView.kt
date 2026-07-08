@@ -1,6 +1,5 @@
 package nl.giejay.mediaslider.view
 
-import android.app.ActivityManager
 import android.content.Context
 import android.util.AttributeSet
 import android.view.LayoutInflater
@@ -11,6 +10,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import nl.giejay.mediaslider.player.VideoDecoderRegistry
 import androidx.media3.ui.PlayerView
 import com.zeuskartik.mediaslider.R
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
@@ -47,6 +48,18 @@ class ExoPlayerView @JvmOverloads constructor(context: Context, resourceId: Int,
             .setRenderersFactory(renderersFactory)
             .setLoadControl(createLoadControl(config))
             .build()
+        player!!.let { p ->
+            p.addAnalyticsListener(object : AnalyticsListener {
+                override fun onVideoDecoderInitialized(
+                    eventTime: AnalyticsListener.EventTime,
+                    decoderName: String,
+                    initializedTimestampMs: Long,
+                    initializationDurationMs: Long
+                ) {
+                    VideoDecoderRegistry.record(p, decoderName)
+                }
+            })
+        }
         playerView.player = player
         if (!config.isVideoSoundEnable) player?.volume = 0f
 
@@ -123,7 +136,10 @@ class ExoPlayerView @JvmOverloads constructor(context: Context, resourceId: Int,
                     BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
                 )
                 .setTargetBufferBytes(getSafetyBufferBytes())
-                .setPrioritizeTimeOverSizeThresholds(true)
+                // false = the byte cap is a HARD bound. With true, ExoPlayer chases
+                // MAX_BUFFER_MS and ignores the byte cap, so a high-bitrate DV original
+                // (~80 Mbps) filled the 384 MB ART heap in ~40 s and OOM-crashed.
+                .setPrioritizeTimeOverSizeThresholds(false)
         } else {
             builder.setPrioritizeTimeOverSizeThresholds(false)
         }
@@ -131,23 +147,26 @@ class ExoPlayerView @JvmOverloads constructor(context: Context, resourceId: Int,
     }
 
     private fun getSafetyBufferBytes(): Int {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return DEFAULT_SAFETY_BYTES
-        val memInfo = ActivityManager.MemoryInfo()
-        am.getMemoryInfo(memInfo)
-        val totalMemMb = memInfo.totalMem / (1024 * 1024)
-        val safeMb = (totalMemMb * SAFETY_MEMORY_FRACTION).toInt().coerceIn(MIN_SAFETY_MB, MAX_SAFETY_MB)
+        // ExoPlayer's DefaultAllocator buffers are byte[] on the ART heap, not native/RAM.
+        // Size the cap from maxMemory() (the app's hard heap limit, ~384 MB on this Chromecast),
+        // NOT from device totalMem (~2 GB) — otherwise the cap exceeds the heap and OOM is certain.
+        val maxHeapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
+        val safeMb = (maxHeapMb * SAFETY_MEMORY_FRACTION).toInt().coerceIn(MIN_SAFETY_MB, MAX_SAFETY_MB)
         return safeMb * 1024 * 1024
     }
 
     private companion object {
         const val MIN_BUFFER_MS = 10_000
-        const val MAX_BUFFER_MS = 300_000
+        // Secondary ceiling only; the byte cap (prioritize=false) is the real bound.
+        // 300_000 (5 min) was absurd for high-bitrate originals.
+        const val MAX_BUFFER_MS = 60_000
         const val BUFFER_FOR_PLAYBACK_MS = 4_000
         const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 4_000
 
+        // Fraction of the app's ART heap (~384 MB) allowed for the video buffer.
+        // 0.40 -> ~153 MB, leaving headroom for UI, bitmaps and decoders.
         const val SAFETY_MEMORY_FRACTION = 0.40
-        const val MIN_SAFETY_MB = 384
-        const val MAX_SAFETY_MB = 768
-        const val DEFAULT_SAFETY_BYTES = 512 * 1024 * 1024
+        const val MIN_SAFETY_MB = 64
+        const val MAX_SAFETY_MB = 192
     }
 }

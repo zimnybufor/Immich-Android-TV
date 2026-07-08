@@ -27,6 +27,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
@@ -48,6 +49,7 @@ import nl.giejay.mediaslider.config.MediaSliderConfiguration
 import nl.giejay.mediaslider.model.SliderItem
 import nl.giejay.mediaslider.model.SliderItemType
 import nl.giejay.mediaslider.model.SliderItemViewHolder
+import nl.giejay.mediaslider.player.PlaybackStatsOverlay
 import nl.giejay.mediaslider.util.FixedSpeedScroller
 import nl.giejay.mediaslider.util.MediaSliderListener
 import timber.log.Timber
@@ -84,12 +86,15 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
     private val goToNextAssetRunnable = Runnable { this.goToNextAsset() }
     private var pagerAdapter: ScreenSlidePagerAdapter? = null
     private var loading = false
+    private var statsEnabled = false
+    private var statsOverlay: PlaybackStatsOverlay? = null
     private val ioScope = CoroutineScope(Job() + Dispatchers.IO)
     private val transformResults = mutableMapOf<Int, String>()
     private var currentToast: Toast? = null
 
     init {
         inflate(getContext(), R.layout.slider, this)
+        defaultExoFactory.setTransferListener(DefaultBandwidthMeter.getSingletonInstance(getContext()))
 
         playButton = findViewById(R.id.playPause)
         playButton.setOnClickListener { toggleSlideshow(true) }
@@ -124,6 +129,10 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
                     return super.dispatchKeyEvent(event)
                 }
                 return false
+            } else if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP && itemType == SliderItemType.VIDEO
+                && currentPlayerView != null && !currentPlayerView!!.isControllerFullyVisible) {
+                toggleStats()
+                return true
             } else if (event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && itemType == SliderItemType.VIDEO && currentPlayerView != null) {
                 currentPlayerView!!.useController = true
                 currentPlayerView!!.showController()
@@ -364,6 +373,7 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
                         currentPlayerView!!.player!!.volume = 0f
                     }
                     currentPlayerInScope!!.playWhenReady = true
+                    if (statsEnabled) attachStats() else statsOverlay?.detach()
                 } else {
                     if (config.isGradiantOverlayVisible) {
                         statusLayoutLeft.setBackgroundResource(R.drawable.gradient_overlay)
@@ -378,6 +388,7 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
                             touchImageView.zoomAndPanEffect(config, sliderItem)
                         }
                     }
+                    statsOverlay?.detach()
                     stopPlayer()
                 }
             }
@@ -445,7 +456,10 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
     }
 
     fun setDefaultExoFactory(defaultExoFactory: DefaultHttpDataSource.Factory) {
+        // Route transfers through the player's bandwidth meter (singleton) so
+        // AnalyticsListener.onBandwidthEstimate fires for the stats overlay.
         this.defaultExoFactory = defaultExoFactory
+            .setTransferListener(DefaultBandwidthMeter.getSingletonInstance(context))
     }
 
     suspend fun addItemsMain(items: List<SliderItemViewHolder>) = withContext(Dispatchers.Main) {
@@ -474,6 +488,21 @@ class MediaSliderView(context: Context) : ConstraintLayout(context) {
 
     private fun currentItem(): SliderItemViewHolder = config.items[mPager.currentItem]
     private fun currentItemType(): SliderItemType = config.items[mPager.currentItem].type
+
+    @OptIn(UnstableApi::class)
+    private fun toggleStats() {
+        statsEnabled = !statsEnabled
+        if (statsEnabled) attachStats() else statsOverlay?.detach()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun attachStats() {
+        val player = currentPlayerInScope ?: return
+        val view = currentPlayerView ?: return
+        val overlay = statsOverlay
+            ?: PlaybackStatsOverlay(ioScope, defaultExoFactory).also { statsOverlay = it }
+        overlay.attach(player, view, currentItem().mainItem.url)
+    }
 
     @OptIn(UnstableApi::class)
     fun isControllerVisible(): Boolean {
