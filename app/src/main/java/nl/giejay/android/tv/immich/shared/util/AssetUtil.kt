@@ -5,6 +5,7 @@ import nl.giejay.mediaslider.model.SliderItemType
 import nl.giejay.mediaslider.model.SliderItemViewHolder
 import nl.giejay.android.tv.immich.api.util.ApiUtil
 import nl.giejay.android.tv.immich.api.model.Asset
+import nl.giejay.android.tv.immich.api.model.AssetExifInfo
 import nl.giejay.android.tv.immich.card.Card
 import nl.giejay.mediaslider.model.MetaDataType
 import nl.giejay.mediaslider.model.StaticMetaDataProvider
@@ -141,9 +142,40 @@ fun List<Asset>.toCards(): List<Card> {
 }
 
 fun Asset.toCard(): Card {
-    return Card(this.deviceAssetId ?: "",
-        this.exifInfo?.description ?: "",
+    val takenAt = this.exifInfo?.dateTimeOriginal ?: this.fileModifiedAt
+    val dateLabel = takenAt?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(it) }
+    val exifDescription = this.exifInfo?.description?.takeIf { it.isNotBlank() }
+    return Card(this.originalFileName ?: this.deviceAssetId ?: "",
+        listOfNotNull(dateLabel, exifDescription).joinToString(" \u2022 "),
         this.id,
         ApiUtil.getThumbnailUrl(this.id, "thumbnail"),
-        ApiUtil.getThumbnailUrl(this.id, "preview"))
+        ApiUtil.getThumbnailUrl(this.id, "preview"),
+        isVideo = this.type == "VIDEO",
+        durationLabel = formatDurationLabel(this.duration),
+        resolutionLabel = if (this.type == "VIDEO") formatResolutionLabel(this.exifInfo) else null)
+}
+
+// Full pixel dimensions for the grid badge, e.g. "3840×2160". Null if unknown.
+private fun formatResolutionLabel(exif: AssetExifInfo?): String? {
+    val w = exif?.exifImageWidth ?: return null
+    val h = exif.exifImageHeight ?: return null
+    if (w <= 0 || h <= 0) return null
+    return "$w×$h"
+}
+
+// Immich duration: v3 sends milliseconds (e.g. "316096"), older versions "H:MM:SS.mmm"
+private fun formatDurationLabel(duration: String?): String? {
+    if (duration.isNullOrBlank()) return null
+    val totalSeconds: Long = if (duration.contains(':')) {
+        val parts = duration.substringBefore('.').split(":").mapNotNull { it.toLongOrNull() }
+        if (parts.size != 3) return null
+        parts[0] * 3600 + parts[1] * 60 + parts[2]
+    } else {
+        (duration.substringBefore('.').toLongOrNull() ?: return null) / 1000
+    }
+    val h = totalSeconds / 3600
+    val m = (totalSeconds % 3600) / 60
+    val s = totalSeconds % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    else String.format(Locale.US, "%d:%02d", m, s)
 }

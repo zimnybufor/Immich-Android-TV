@@ -7,4 +7,7 @@ interface ICard {
     val thumbnailUrl: String?
     val backgroundUrl: String?
     val selected: Boolean
+    val isVideo: Boolean get() = false
+    val durationLabel: String? get() = null
+    val resolutionLabel: String? get() = null
 }

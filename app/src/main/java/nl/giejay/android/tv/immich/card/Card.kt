@@ -6,4 +6,7 @@ data class Card(
     override val id: String,
     override val thumbnailUrl: String?,
     override val backgroundUrl: String?,
-    override var selected: Boolean = false) : ICard
+    override var selected: Boolean = false,
+    override val isVideo: Boolean = false,
+    override val durationLabel: String? = null,
+    override val resolutionLabel: String? = null) : ICard
